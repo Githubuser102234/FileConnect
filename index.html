@@ -63,11 +63,12 @@
 
         <!-- Upload Section -->
         <section id="upload-section" class="bg-white p-6 rounded-xl shadow-lg mb-10">
-            <h2 class="text-2xl font-semibold text-gray-800 mb-4">Upload New Media (Max ~15MB)</h2>
+            <h2 class="text-2xl font-semibold text-gray-800 mb-4">Upload New File (All Types Supported)</h2>
             
             <div id="message-box" class="hidden p-3 mb-4 text-sm rounded-lg" role="alert"></div>
 
-            <input type="file" id="media-file-input" accept="image/*,video/*" class="w-full text-sm text-gray-500
+            <!-- Removed 'accept' attribute to allow all file types -->
+            <input type="file" id="media-file-input" class="w-full text-sm text-gray-500
                 file:mr-4 file:py-2 file:px-4
                 file:rounded-full file:border-0
                 file:text-sm file:font-semibold
@@ -75,7 +76,7 @@
                 hover:file:bg-indigo-100" />
             
             <div class="mt-4">
-                <input type="text" id="media-title-input" placeholder="Title (e.g., Sunset View)"
+                <input type="text" id="media-title-input" placeholder="Title (e.g., Project Document or My Video)"
                        class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
             </div>
 
@@ -83,7 +84,6 @@
                 <span id="upload-text">Upload File</span>
                 <span id="upload-spinner" class="hidden animate-spin h-5 w-5 border-4 border-white border-t-transparent rounded-full ml-2"></span>
             </button>
-            <p class="text-xs text-red-500 mt-2">Warning: Large files might take significant time to process and upload.</p>
         </section>
 
         <!-- Gallery Section -->
@@ -123,13 +123,13 @@
             appId: "1:900879046037:web:8560c5b3b57be8740d929c",
             measurementId: "G-B7RR873MSB"
         };
-        const FIXED_APP_ID = FIREBASE_CONFIG.projectId; // Using projectId as a fixed ID for the Firestore path
+        const FIXED_APP_ID = FIREBASE_CONFIG.projectId;
 
         // Load specific SDK versions provided by the user
         import { initializeApp } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-auth.js";
-        import { getFirestore, doc, addDoc, setDoc, onSnapshot, collection, query, orderBy, serverTimestamp, getDocs, deleteDoc, runTransaction, setLogLevel } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-firestore.js";
-        import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-analytics.js"; // Included per user request
+        import { getFirestore, doc, getDoc, addDoc, setDoc, onSnapshot, collection, query, orderBy, serverTimestamp, getDocs, deleteDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-firestore.js";
+        import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-analytics.js";
 
         // Global Firebase instances
         let app, db, auth;
@@ -137,8 +137,9 @@
         let isAuthReady = false;
 
         // CONSTANTS
-        // Firestore limit is 1MB (~1,048,576 bytes). We aim for chunks under 900KB of base64 string.
-        const CHUNK_SIZE = 900000; // 900KB of base64 string characters
+        // 900KB of base64 string characters per chunk to stay well under the 1MB Firestore limit.
+        const CHUNK_SIZE = 900000; 
+        const MEDIA_COLLECTION_PATH = `artifacts/${FIXED_APP_ID}/public/data/media_files`;
 
         const messageBox = document.getElementById('message-box');
         const uploadBtn = document.getElementById('upload-btn');
@@ -155,9 +156,8 @@
          */
         async function initFirebase() {
             try {
-                // setLogLevel('Debug'); // Uncomment for detailed debug logs
                 app = initializeApp(FIREBASE_CONFIG);
-                getAnalytics(app); // Initialize analytics as requested
+                getAnalytics(app);
                 db = getFirestore(app);
                 auth = getAuth(app);
 
@@ -171,7 +171,8 @@
                         document.getElementById('user-info').textContent = `User ID: ${userId} (Signed in anonymously)`;
                         isAuthReady = true;
                         uploadBtn.disabled = false;
-                        startGalleryListener(); // Start listening for media after auth
+                        startGalleryListener(); // Start real-time listener
+                        checkShareLink();     // Check URL for shared ID
                     } else {
                         document.getElementById('user-info').textContent = `Authentication failed. Cannot proceed.`;
                         uploadBtn.disabled = true;
@@ -186,8 +187,6 @@
 
         /**
          * Converts a File object to a Base64 data URL string.
-         * @param {File} file The file to convert.
-         * @returns {Promise<string>} A promise that resolves with the Base64 data URL.
          */
         function fileToBase64(file) {
             return new Promise((resolve, reject) => {
@@ -200,12 +199,8 @@
 
         /**
          * Splits a Base64 string into chunks of a specified size.
-         * Skips the MIME type prefix (e.g., 'data:image/jpeg;base64,').
-         * @param {string} base64DataUrl The full Base64 data URL string.
-         * @returns {Array<string>} An array of Base64 data chunks.
          */
         function chunkBase64(base64DataUrl) {
-            // Find the start of the actual base64 data after the header
             const commaIndex = base64DataUrl.indexOf(',');
             if (commaIndex === -1) {
                 throw new Error("Invalid Base64 Data URL format.");
@@ -220,7 +215,7 @@
         }
 
         /**
-         * Uploads the media file in chunks to Firestore.
+         * Uploads the file in chunks to Firestore.
          */
         async function handleUpload() {
             const file = mediaFileInput.files[0];
@@ -231,7 +226,7 @@
                 return;
             }
 
-            setLoading(true, "Encoding & Chunking...");
+            setLoading(true, "Encoding & Chunking (may take time for large files)...");
 
             let base64DataUrl, chunks;
             try {
@@ -242,42 +237,30 @@
                 showSystemMessage(`File processing failed: ${error.message}`, 'bg-red-100 text-red-800');
                 return;
             }
-
-            if (chunks.length > 20) {
-                 setLoading(false);
-                 showSystemMessage(`File is too large (${chunks.length} chunks). Max recommended is 20 chunks (approx 15MB).`, 'bg-red-100 text-red-800');
-                 return;
-            }
-
+            
             setLoading(true, `Uploading ${chunks.length} chunks...`);
 
             try {
-                // Public Collection Path: artifacts/{projectId}/public/data/media_files
-                const mediaCollectionPath = `artifacts/${FIXED_APP_ID}/public/data/media_files`;
-                
                 // 1. Create the root document for metadata
-                const newDocRef = await addDoc(collection(db, mediaCollectionPath), {
+                const newDocRef = await addDoc(collection(db, MEDIA_COLLECTION_PATH), {
                     title: title,
                     mimeType: file.type,
                     chunkCount: chunks.length,
-                    fileSize: file.size, // Original file size in bytes
+                    fileSize: file.size, 
                     uploadedBy: userId,
                     timestamp: serverTimestamp()
                 });
 
                 // 2. Upload the chunks to a subcollection
-                const chunkCollectionRef = collection(db, mediaCollectionPath, newDocRef.id, 'chunks');
+                const chunkCollectionRef = collection(db, MEDIA_COLLECTION_PATH, newDocRef.id, 'chunks');
                 
-                // Get the MIME type header to store with the metadata
+                // Get the MIME type header (e.g., data:image/jpeg;base64,)
                 const mimeTypeHeader = base64DataUrl.substring(0, base64DataUrl.indexOf(',') + 1);
 
-                // Use a transaction to ensure both the main doc update and chunk uploads are atomic
-                // Note: Transactions are best for operations on a few documents. For many, sequential set/batch writes are alternatives.
-                // Given the chunk count is limited, we use setDoc sequentially for simplicity and error visibility.
-                
-                // Update the main document with the mimeTypeHeader outside the transaction for simplicity
+                // Store the header in the main document
                 await setDoc(newDocRef, { mimeTypeHeader: mimeTypeHeader }, { merge: true });
 
+                // Upload chunks sequentially for simple error handling
                 const chunkUploadPromises = [];
                 for (let i = 0; i < chunks.length; i++) {
                     const chunkDocRef = doc(chunkCollectionRef, i.toString());
@@ -290,11 +273,9 @@
                     );
                 }
                 
-                // Wait for all chunks to upload
                 await Promise.all(chunkUploadPromises);
 
                 showSystemMessage(`Successfully uploaded "${title}" in ${chunks.length} chunks!`, 'bg-green-100 text-green-800');
-                // Clear inputs
                 mediaFileInput.value = '';
                 mediaTitleInput.value = '';
 
@@ -305,22 +286,38 @@
                 setLoading(false);
             }
         }
+        
+        /**
+         * Fetches metadata for a single media item.
+         */
+        async function getMediaMetadata(mediaId) {
+            const docRef = doc(db, MEDIA_COLLECTION_PATH, mediaId);
+            const docSnap = await getDoc(docRef);
+            
+            if (!docSnap.exists()) {
+                throw new Error(`File ID ${mediaId} not found.`);
+            }
+            const data = docSnap.data();
+            // Ensure essential data is present for reassembly
+            if (!data.mimeTypeHeader || data.chunkCount === undefined) {
+                 throw new Error("Shared file metadata is incomplete.");
+            }
+            return { id: docSnap.id, ...data };
+        }
+
 
         /**
          * Retrieves all chunks for a given media ID and reassembles the Base64 data URL.
-         * @param {string} mediaId The ID of the media document.
-         * @returns {Promise<string>} The complete Base64 data URL.
          */
         async function getAndReassembleMedia(mediaId, mimeTypeHeader, chunkCount) {
-            const mediaCollectionPath = `artifacts/${FIXED_APP_ID}/public/data/media_files`;
-            const chunkCollectionRef = collection(db, mediaCollectionPath, mediaId, 'chunks');
+            const chunkCollectionRef = collection(db, MEDIA_COLLECTION_PATH, mediaId, 'chunks');
             
             // Fetch all chunk documents, ordered by index
             const chunkQuery = query(chunkCollectionRef, orderBy('index', 'asc'));
             const chunkQuerySnapshot = await getDocs(chunkQuery);
 
             if (chunkQuerySnapshot.docs.length !== chunkCount) {
-                 throw new Error("Mismatched chunk count. Data might be corrupted or incomplete.");
+                 throw new Error(`Mismatched chunk count (${chunkQuerySnapshot.docs.length} found, ${chunkCount} expected).`);
             }
 
             const chunkArray = Array(chunkCount);
@@ -332,14 +329,12 @@
                 }
             });
 
-            // Reassemble the full Base64 string
             const fullBase64String = chunkArray.join('');
             
             if (!fullBase64String) {
                 throw new Error("Reassembled Base64 string is empty.");
             }
 
-            // Prepend the MIME type header to form the complete data URL
             return `${mimeTypeHeader}${fullBase64String}`;
         }
 
@@ -350,13 +345,11 @@
         function startGalleryListener() {
             if (!isAuthReady || !db) return;
 
-            const mediaCollectionPath = `artifacts/${FIXED_APP_ID}/public/data/media_files`;
-            const mediaQuery = query(collection(db, mediaCollectionPath), orderBy('timestamp', 'desc'));
+            const mediaQuery = query(collection(db, MEDIA_COLLECTION_PATH), orderBy('timestamp', 'desc'));
 
             onSnapshot(mediaQuery, (snapshot) => {
                 const mediaItems = [];
                 snapshot.forEach(doc => {
-                    // Check for necessary fields before display
                     const data = doc.data();
                     if (data.title && data.mimeType && data.chunkCount !== undefined && data.mimeTypeHeader) {
                          mediaItems.push({ id: doc.id, ...data });
@@ -371,7 +364,6 @@
 
         /**
          * Renders the media gallery based on the fetched metadata.
-         * @param {Array<Object>} items Array of media metadata objects.
          */
         function renderGallery(items) {
             mediaGallery.innerHTML = ''; // Clear existing content
@@ -382,33 +374,36 @@
             }
 
             items.forEach(item => {
-                const isVideo = item.mimeType.startsWith('video/');
-                
-                // Create the card element
+                const mime = item.mimeType.split('/')[0];
+                const mediaType = mime === 'video' || mime === 'image' ? mime.toUpperCase() : 'FILE';
+                const placeholderText = `${mediaType} (${(item.fileSize / (1024 * 1024)).toFixed(2)} MB)`;
+
                 const card = document.createElement('div');
                 card.className = 'bg-white rounded-xl shadow-md overflow-hidden transition transform hover:shadow-xl hover:-translate-y-1 cursor-pointer';
                 card.onclick = () => showMediaModal(item);
 
-                // Determine the preview element (placeholder image for now)
-                let previewHtml;
-                const mediaType = item.mimeType.startsWith('video') ? 'VIDEO' : 'IMAGE';
-                const placeholderText = `${mediaType} (${(item.fileSize / (1024 * 1024)).toFixed(2)} MB)`;
-
-                previewHtml = `<div class="media-container"><img src="https://placehold.co/600x337/3B82F6/ffffff?text=${encodeURIComponent(placeholderText)}%0A(Click%20to%20Load)" class="media-item object-cover w-full h-full" alt="Media Preview"/></div>`;
+                const previewHtml = `<div class="media-container"><img src="https://placehold.co/600x337/3B82F6/ffffff?text=${encodeURIComponent(placeholderText)}%0A(Click%20to%20Load)" class="media-item object-cover w-full h-full" alt="Media Preview"/></div>`;
 
                 card.innerHTML = `
                     ${previewHtml}
                     <div class="p-4">
                         <h3 class="text-lg font-semibold text-gray-800 truncate">${item.title}</h3>
                         <p class="text-sm text-gray-500 mt-1">
-                            ${mediaType} | 
+                            ${item.mimeType} | 
                             ${item.chunkCount} chunks
                         </p>
                         <p class="text-xs text-gray-400 mt-1">Uploaded by: ${item.uploadedBy.substring(0, 8)}...</p>
-                        <button onclick="event.stopPropagation(); deleteMedia('${item.id}', '${item.title}', ${item.chunkCount})" 
-                                class="mt-2 text-xs text-red-500 hover:text-red-700 transition duration-150">
-                            Delete
-                        </button>
+                        <div class="flex justify-between items-center mt-2">
+                            <button onclick="event.stopPropagation(); window.deleteMedia('${item.id}', '${item.title}', ${item.chunkCount})" 
+                                    class="text-xs text-red-500 hover:text-red-700 transition duration-150 font-medium">
+                                Delete
+                            </button>
+                            <!-- Share Link Button -->
+                            <button onclick="event.stopPropagation(); window.copyShareLink('${item.id}')" 
+                                    class="text-xs text-indigo-600 hover:text-indigo-800 transition duration-150 font-medium p-1 rounded-md bg-indigo-50">
+                                Copy Share Link
+                            </button>
+                        </div>
                     </div>
                 `;
                 mediaGallery.appendChild(card);
@@ -416,9 +411,52 @@
         }
 
         /**
+         * Utility to copy a string to the clipboard.
+         */
+        window.copyShareLink = (mediaId) => {
+            const shareUrl = window.location.origin + window.location.pathname + `?share=${mediaId}`;
+            
+            const tempInput = document.createElement('textarea');
+            tempInput.value = shareUrl;
+            document.body.appendChild(tempInput);
+            tempInput.select();
+            
+            try {
+                document.execCommand('copy');
+                showSystemMessage("Share link copied to clipboard!", 'bg-blue-100 text-blue-800');
+            } catch (err) {
+                console.error('Could not copy text: ', err);
+                showSystemMessage("Error copying link. Check console.", 'bg-red-100 text-red-800');
+            }
+            
+            document.body.removeChild(tempInput);
+        };
+
+        /**
+         * Checks the URL for a ?share=ID parameter and loads the content if found.
+         */
+        async function checkShareLink() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const shareId = urlParams.get('share');
+            
+            if (shareId) {
+                try {
+                    // Try to fetch the metadata for the shared file
+                    const item = await getMediaMetadata(shareId);
+                    showMediaModal(item);
+                } catch (error) {
+                    console.error("Share Link Error:", error);
+                    showSystemMessage(`Could not load shared file ID: ${shareId}. Error: ${error.message}`, 'bg-red-100 text-red-800');
+                } finally {
+                    // Clear the share parameter from the URL after processing
+                    history.replaceState(null, '', window.location.pathname);
+                }
+            }
+        }
+
+
+        /**
          * Shows a system message in the designated box.
-         * @param {string} message The message content.
-         * @param {string} classes Tailwind classes for styling (e.g., 'bg-green-100 text-green-800').
          */
         function showSystemMessage(message, classes) {
             messageBox.textContent = message;
@@ -429,8 +467,6 @@
 
         /**
          * Controls the loading state of the upload button.
-         * @param {boolean} isLoading Whether the application is loading.
-         * @param {string} text Optional custom text for the button.
          */
         function setLoading(isLoading, text = "Upload File") {
             uploadBtn.disabled = isLoading;
@@ -445,9 +481,8 @@
 
         /**
          * Opens the modal and loads the full media content.
-         * @param {Object} item The media metadata object.
          */
-        async function showMediaModal(item) {
+        window.showMediaModal = async (item) => {
             modalContent.innerHTML = `<div class="text-center p-8">
                                         <p class="text-xl font-semibold mb-4 text-gray-700">Loading ${item.title}...</p>
                                         <div class="animate-spin h-8 w-8 border-4 border-indigo-500 border-t-transparent rounded-full mx-auto"></div>
@@ -459,12 +494,27 @@
                 const dataUrl = await getAndReassembleMedia(item.id, item.mimeTypeHeader, item.chunkCount);
                 
                 let mediaElement;
-                if (item.mimeType.startsWith('image/')) {
+                const mimeType = item.mimeType;
+                
+                if (mimeType.startsWith('image/')) {
                     mediaElement = `<img src="${dataUrl}" alt="${item.title}" class="max-h-[80vh] w-full object-contain mx-auto rounded-lg shadow-lg">`;
-                } else if (item.mimeType.startsWith('video/')) {
+                } else if (mimeType.startsWith('video/')) {
                     mediaElement = `<video src="${dataUrl}" controls autoplay loop class="max-h-[80vh] w-full mx-auto rounded-lg shadow-lg"></video>`;
+                } else if (mimeType.startsWith('text/') || mimeType === 'application/json' || mimeType === 'application/xml') {
+                    // Display text/code content
+                    const base64Data = dataUrl.substring(dataUrl.indexOf(',') + 1);
+                    const decodedText = atob(base64Data);
+                    mediaElement = `<pre class="bg-gray-100 p-4 rounded-lg overflow-x-auto text-sm max-h-[70vh]"><code class="language-${mimeType.split('/')[1]}">${decodedText}</code></pre>`;
                 } else {
-                    mediaElement = `<p class="text-red-500">Unsupported media type: ${item.mimeType}</p>`;
+                     // For all other file types (PDF, Zip, executable, etc.), provide a download link
+                     mediaElement = `<div class="p-8 text-center">
+                                         <p class="text-xl font-bold mb-2 text-gray-800">Unsupported File Type: ${mimeType}</p>
+                                         <p class="mb-4 text-gray-600">This file cannot be previewed directly in the browser.</p>
+                                         <a href="${dataUrl}" download="${item.title.replace(/\s/g, '_')}_${item.id.substring(0, 4)}.${mimeType.split('/').pop()}" 
+                                            class="inline-block px-6 py-3 bg-green-600 text-white font-bold rounded-xl hover:bg-green-700 transition duration-150">
+                                            Download File (${(item.fileSize / (1024 * 1024)).toFixed(2)} MB)
+                                         </a>
+                                      </div>`;
                 }
 
                 modalContent.innerHTML = `
@@ -479,7 +529,7 @@
                 modalContent.innerHTML = `<div class="p-8 text-center text-red-600">
                                             <h3 class="text-xl font-bold mb-2">Error Loading Media</h3>
                                             <p>${error.message}</p>
-                                            <p class="mt-4 text-sm text-gray-500">Check the console for details. Data may be incomplete or corrupted.</p>
+                                            <p class="mt-4 text-sm text-gray-500">File reassembly failed. Data may be incomplete or corrupted.</p>
                                           </div>`;
             }
         }
@@ -488,7 +538,7 @@
          * Deletes a media item and all its chunks.
          */
         window.deleteMedia = async (mediaId, title, chunkCount) => {
-            // Using the modal as a confirmation dialog instead of window.confirm()
+            // Using the modal as a confirmation dialog
             modalContent.innerHTML = `
                 <div class="p-6 text-center">
                     <h3 class="text-xl font-bold mb-4 text-gray-800">Confirm Deletion</h3>
@@ -504,15 +554,14 @@
             document.getElementById('cancel-delete').onclick = () => modal.classList.add('hidden');
             
             document.getElementById('confirm-delete').onclick = async () => {
-                modal.classList.add('hidden'); // Hide modal immediately
+                modal.classList.add('hidden');
                 showSystemMessage(`Deleting ${title}...`, 'bg-indigo-100 text-indigo-800');
 
                 try {
-                    const mediaCollectionPath = `artifacts/${FIXED_APP_ID}/public/data/media_files`;
-                    const mediaDocRef = doc(db, mediaCollectionPath, mediaId);
+                    const mediaDocRef = doc(db, MEDIA_COLLECTION_PATH, mediaId);
                     
                     // 1. Delete all chunks in the subcollection
-                    const chunkCollectionRef = collection(db, mediaCollectionPath, mediaId, 'chunks');
+                    const chunkCollectionRef = collection(db, MEDIA_COLLECTION_PATH, mediaId, 'chunks');
                     const chunkSnapshot = await getDocs(query(chunkCollectionRef));
 
                     const deletePromises = [];
@@ -525,7 +574,7 @@
                     // 2. Delete the main metadata document
                     await deleteDoc(mediaDocRef);
 
-                    showSystemMessage(`Successfully deleted "${title}" and all associated chunks.`, 'bg-green-100 text-green-800');
+                    showSystemMessage(`Successfully deleted "${title}".`, 'bg-green-100 text-green-800');
 
                 } catch (error) {
                     console.error("Deletion Error:", error);
@@ -540,11 +589,8 @@
         });
 
         uploadBtn.addEventListener('click', handleUpload);
-
-        // Export window function for modal display
-        window.showMediaModal = showMediaModal;
         
-        // Start the application
+        // Start the application after the window loads
         window.onload = initFirebase;
     </script>
 </body>
