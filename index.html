@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Base64 Chunked Media Sharing</title>
+    <title>Media Vault</title>
     <!-- Load Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -55,15 +55,22 @@
     <!-- Main Application Container -->
     <div id="app" class="max-w-7xl mx-auto">
         
-        <!-- Header -->
+        <!-- Header: Simplified Title -->
         <header class="text-center mb-10 py-4 bg-white rounded-xl shadow-lg">
-            <h1 class="text-4xl font-extrabold text-indigo-700">Media Vault (Chunked Firestore)</h1>
-            <p id="user-info" class="text-sm mt-2 text-gray-500">Initializing Firebase and signing in anonymously...</p>
+            <h1 class="text-4xl font-extrabold text-indigo-700">Media Vault</h1>
+            <!-- Removed User Info/Status Text -->
         </header>
 
         <!-- Upload Section -->
         <section id="upload-section" class="bg-white p-6 rounded-xl shadow-lg mb-10">
-            <h2 class="text-2xl font-semibold text-gray-800 mb-4">Upload New File (All Types Supported)</h2>
+            
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-2xl font-semibold text-gray-800">Upload New File</h2>
+                <!-- Supported Types Indicator -->
+                <span class="inline-flex items-center px-3 py-1 text-sm font-medium bg-green-100 text-green-800 rounded-full">
+                    Supported types: All
+                </span>
+            </div>
             
             <div id="message-box" class="hidden p-3 mb-4 text-sm rounded-lg" role="alert"></div>
 
@@ -146,7 +153,6 @@
 
         const messageBox = document.getElementById('message-box');
         const uploadBtn = document.getElementById('upload-btn');
-        const uploadText = document.getElementById('upload-text');
         const uploadSpinner = document.getElementById('upload-spinner');
         const mediaFileInput = document.getElementById('media-file-input');
         const mediaTitleInput = document.getElementById('media-title-input');
@@ -172,14 +178,15 @@
                 onAuthStateChanged(auth, (user) => {
                     if (user) {
                         userId = user.uid;
-                        document.getElementById('user-info').textContent = `User ID: ${userId} (Signed in anonymously)`;
+                        // User ID display removed as requested.
                         isAuthReady = true;
                         uploadBtn.disabled = false;
                         uploadStatus.classList.remove('invisible');
                         startGalleryListener(); // Start real-time listener
                         checkShareLink();     // Check URL for shared ID
                     } else {
-                        document.getElementById('user-info').textContent = `Authentication failed. Cannot proceed.`;
+                        // Keep console error logging for debugging purposes
+                        console.error("Authentication failed: User object is null.");
                         uploadBtn.disabled = true;
                     }
                 });
@@ -394,7 +401,7 @@
 
             items.forEach(item => {
                 const mime = item.mimeType.split('/')[0];
-                const mediaType = mime === 'video' || mime === 'image' ? mime.toUpperCase() : 'FILE';
+                const mediaType = mime === 'video' || mime === 'image' || mime === 'audio' ? mime.toUpperCase() : 'FILE';
                 const placeholderText = `${mediaType} (${(item.fileSize / (1024 * 1024)).toFixed(2)} MB)`;
 
                 const card = document.createElement('div');
@@ -490,10 +497,11 @@
         function setLoading(isLoading, text = "Upload File") {
             uploadBtn.disabled = isLoading;
             uploadSpinner.classList.toggle('hidden', !isLoading);
+            document.getElementById('upload-text').textContent = text;
         }
 
         /**
-         * Opens the modal and loads the full media content, including a warning for non-previewable types.
+         * Opens the modal and loads the full media content, handling all preview types.
          */
         window.showMediaModal = async (item) => {
             modalContent.innerHTML = `<div class="text-center p-8">
@@ -510,7 +518,13 @@
                 const mimeType = item.mimeType;
                 
                 // Determine if a browser preview is possible
-                const isPreviewable = mimeType.startsWith('image/') || mimeType.startsWith('video/') || mimeType.startsWith('text/') || mimeType === 'application/json' || mimeType === 'application/xml';
+                const isPreviewable = mimeType.startsWith('image/') || 
+                                      mimeType.startsWith('video/') || 
+                                      mimeType.startsWith('audio/') || 
+                                      mimeType.startsWith('text/') || 
+                                      mimeType === 'application/pdf' || // Added PDF support
+                                      mimeType === 'application/json' || 
+                                      mimeType === 'application/xml';
                 
                 let warningIcon = '';
 
@@ -518,13 +532,18 @@
                     mediaElement = `<img src="${dataUrl}" alt="${item.title}" class="max-h-[80vh] w-full object-contain mx-auto rounded-lg shadow-lg">`;
                 } else if (mimeType.startsWith('video/')) {
                     mediaElement = `<video src="${dataUrl}" controls autoplay loop class="max-h-[80vh] w-full mx-auto rounded-lg shadow-lg"></video>`;
+                } else if (mimeType.startsWith('audio/')) { // Added Audio support
+                    mediaElement = `<div class="p-8"><audio src="${dataUrl}" controls autoplay class="w-full max-w-lg mx-auto block"></audio></div>`;
+                } else if (mimeType === 'application/pdf') { // Added PDF support
+                    // Use iframe for PDF preview. The data URL is directly usable here.
+                    mediaElement = `<iframe src="${dataUrl}" class="w-full h-[80vh] border-0 rounded-lg shadow-lg"></iframe>`;
                 } else if (mimeType.startsWith('text/') || mimeType === 'application/json' || mimeType === 'application/xml') {
                     // Display text/code content
                     const base64Data = dataUrl.substring(dataUrl.indexOf(',') + 1);
                     const decodedText = atob(base64Data);
                     mediaElement = `<pre class="bg-gray-100 p-4 rounded-lg overflow-x-auto text-sm max-h-[70vh]"><code class="language-${mimeType.split('/')[1] || 'plaintext'}">${decodedText}</code></pre>`;
                 } else {
-                     // Non-previewable types (PDF, Zip, executable, etc.)
+                     // Non-previewable types (Zip, executable, etc.)
                      warningIcon = `
                         <div class="p-3 bg-yellow-100 text-yellow-800 rounded-lg flex items-center mb-4">
                             <!-- Warning Icon SVG -->
